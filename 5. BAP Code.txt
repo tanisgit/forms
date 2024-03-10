@@ -1,0 +1,296 @@
+/* A. Assigning libraries and defining macro variables  */
+
+options compress=yes;
+
+/* Input File Path */
+Libname inp_CL "/sasdata/Acturial/Reserving/Mar 23/";
+Libname inp_CL2 "/sasdata/Acturial/Reserving/Claims Data";
+
+Libname NG "/sasdata/Acturial/Reserving/Reporting/Annual Reports/FY 23/Merged_Data";
+option compress = yes;
+/* Output File Path */
+Libname output "/sasdata/Acturial/Reserving/Reporting/Annual Reports/FY 23/Data";
+
+/* Macro variables */
+/* 1. Start date of FY */
+%Let yrstdate= mdy(04,01,2022);
+/* 2. Current valuation Month year */
+%Let vmy=0323;
+/* 3. Previous valuation Month year*/
+%Let pvmy= 0322;
+/* 4. Output file location*/
+%Let filepath=/sasdata/Acturial/Reserving/Reporting/Annual Reports/FY 23/Data;
+
+
+/* Mar21 final claims */
+
+data paid_claims;
+set inp_cl.PROCESSED_CLAIMS_PAID_V2_0323;
+
+Pre_Auth_ID = compress(Pre_Auth_ID);
+claim_id = compress(claim_id);
+
+format key$30.;
+if Pre_Auth_ID=. then key=claim_id;
+else key=cats(Pre_Auth_ID,"P");
+NG_Status = 'PAID';
+run;
+proc contents data = paid_claims;
+run;
+
+proc sql;
+create table paid_claims_summ as
+select 
+key,
+NG_Status,
+Incurred_date,
+LOB_INT,
+Product,
+sum(FINAL_CLAIM_COUNT) as ct,
+sum(netclaimamt) as amt
+from paid_claims
+group by 1,2,3,4,5;
+run;
+
+data os_claims;
+set inp_cl.FINAL_CLAIMS_DATA_NEW_0323;
+if upcase(FINAL_STATUS_USED) ne 'OUTSTANDING' then delete;
+format key$30.;
+format claim_id_n $30.;
+claim_id_n= compress(claim_id);
+preauthID_n= compress(pre_auth_ID);
+if preauthID_n='' or preauthID_n='.'   then key= claim_id_n;
+else key=cats(preauthID_n,'P');
+if index(final_claim_id,'G') gt 0 then key=final_claim_id;
+if key='' or key='.' OR KEY='.P' then key=final_claim_id;
+NG_Status = 'OUTSTANDING';
+run;
+proc contents data = os_claims;
+run;
+
+proc sql;
+create table os_claims_summ as
+select 
+key,
+NG_Status,
+MIN_of_Date_of_Admission as Incurred_date,
+LOB_INT,
+Product,
+sum(FINAL_CLAIM_COUNT) as ct,
+sum(Net_Incurred_Claims_VQS) as amt
+from os_claims
+group by 1,2,3,4,5;
+run;
+
+proc sort data = paid_claims_summ;
+by key;
+run;
+
+proc sort data = os_claims_summ;
+by key;
+run;
+
+data check;
+merge paid_claims_summ (in =x) os_claims_summ (in =y);
+by key;
+if x = 1 and y = 1;
+run;
+
+data merged_23;
+set paid_claims_summ os_claims_summ;
+by key;
+dup_first = first.key;
+dup_last = last.key;
+
+run;
+
+data merged_23;
+set merged_23;
+if NG_Status eq 'PAID' and dup_last eq 0 then 
+key = cats(key,'_2');
+run;
+
+/* Output File Path */
+Libname output "/sasdata/Acturial/Reserving/Reporting/Annual Reports/FY 23/Data";
+
+proc contents data = output.DENIED_CLAIM_0323;
+run;
+
+data rejected;
+set output.DENIED_CLAIM_0323;
+rename final_claim_id = key;
+NG_Status = 'Rejected';
+run;
+
+proc sql;
+create table rejected_summ as
+select 
+key,
+NG_Status ,
+MIN_of_Date_of_Admission as Incurred_date,
+LOB_INT,
+Product,
+sum(COUNT_CLAIM) as ct,
+sum(billed_amount) as amt
+from rejected
+group by 1,2,3,4,5;
+run;
+
+
+proc sort data = merged_23;
+by key;
+run;
+
+proc sort data = rejected_summ;
+by key;
+run;
+
+data check2;
+merge merged_23 (in =x) rejected_summ (in =y);
+by key;
+if x = 1 and y = 1;
+run;
+
+
+data final_merged_23;
+set merged_23 rejected_summ;
+by key;
+dup_first = first.key;
+dup_last = last.key;
+
+run;
+
+data final_merged_23;
+set final_merged_23;
+if NG_Status eq 'Reje' and dup_first eq 0 then 
+key = cats(key,'_2');
+run;
+
+data NG.final_merged_23_master;
+set final_merged_23;
+run;
+
+
+
+
+/* Claims Merge - Mar22 and Mar 23 */
+
+proc sort data =  NG.final_merged_23_master;
+by key;
+run;
+
+
+proc sort data =  NG.final_merged_22_master;
+by key;
+run;
+
+proc contents data = NG.final_merged_23_master;
+run;
+
+data NG.final_merged_23_master;
+set NG.final_merged_23_master;
+rename NG_Status = NG_Status_Mar23;
+rename Incurred_date = Incurred_date_Mar23;
+rename Product = Product_Mar23;
+rename LOB_INT = LOB_INT_Mar23;
+rename amt = amt_Mar23;
+rename ct = ct_Mar23;
+rename dup_first = dup_first_Mar23;
+rename dup_last = dup_last_Mar23;
+run;
+
+
+data NG.final_merged_result;
+merge NG.final_merged_23_master (in =x) NG.final_merged_22_master (in = y);
+by key;
+run;
+
+/*Importing last yr used columns */
+proc import datafile="/sasdata/Acturial/Reserving/Reporting/Annual Reports/FY 23/Merged_Data/Merged_result_V5_mar22.xlsx"
+dbms=xlsx
+out=Merged_result_V5_mar22
+replace;
+sheet='Sheet1';
+run;
+
+
+data NG.Merged_result_mar22;
+set Merged_result_V5_mar22;
+run;
+
+
+proc sort data =  NG.Merged_result_mar22;
+by key;
+run;
+
+proc sort data =  NG.final_merged_result;
+by key;
+run;
+
+
+
+data NG.final_merged_result2;
+merge NG.final_merged_result(in =x) NG.Merged_result_mar22 (in = y);
+by key;
+run;
+
+data NG.final_merged_result2;
+
+set NG.final_merged_result2;
+IF MONTH(Incurred_date_Mar22_Updated) > 3
+THEN INCR_Yr_Mar22 = COMPRESS(YEAR(Incurred_date_Mar22_Updated)||"-"||
+YEAR(Incurred_date_Mar22_Updated)+1);
+ELSE INCR_Yr_Mar22 = COMPRESS(YEAR(Incurred_date_Mar22_Updated)-1||"-"||
+YEAR(Incurred_date_Mar22_Updated));
+
+IF MONTH(Incurred_date_Mar23) > 3
+THEN INCR_Yr_Mar23 = COMPRESS(YEAR(Incurred_date_Mar23)||"-"||
+YEAR(Incurred_date_Mar23)+1);
+ELSE INCR_Yr_Mar23 = COMPRESS(YEAR(Incurred_date_Mar23)-1||"-"||
+YEAR(Incurred_date_Mar23));
+run;
+
+data NG.final_merged_result2;
+set NG.final_merged_result2;
+Diff = amt_Mar23-amt_Mar22_Updated;
+run;
+
+
+
+/*
+data final_merged_result;
+set NG.final_merged_result;
+run;
+
+
+proc sql;
+create table NG.final_merged_result2 as
+select final_merged_result.*,
+t.PB_Status_Mar22_Updated,
+t.Incurred_date_Mar22_Updated,
+t.LOB_INT_Mar22_Updated,
+t.ct_Mar22_Rev_Updated,
+t.amt_Mar22_Updated
+from final_merged_result left join NG.Merged_result_mar22 as t
+on final_merged_result.key = t.key;
+quit;
+
+*/
+
+
+
+
+proc export data=NG.final_merged_result2 (obs = 500000)
+outfile="/sasdata/Acturial/Reserving/Reporting/Annual Reports/FY 23/Merged_Data/set1"
+dbms=xlsx
+replace;
+sheet='sheet1';
+run;
+
+
+proc export data=NG.final_merged_result2 (firstobs = 500001)
+outfile="/sasdata/Acturial/Reserving/Reporting/Annual Reports/FY 23/Merged_Data/set2"
+dbms=xlsx
+replace;
+sheet='sheet1';
+run;
